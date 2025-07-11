@@ -1,0 +1,15 @@
+[
+  {
+    "ticker": "VTBR",
+    "date_format": "%Y-%m-%d %H:%M:%S",
+    "data_path": "/home/timur/Projects/hotwater/hotwater/summer/src/hotwater/data/VTBR-30.csv",
+    "date_column": "time",
+    "data_format": "csv",
+    "timeframe": 30,
+    "start_date": "2020-01-03 10:00:00",
+    "end_date": "2025-07-06 14:00:00",
+    "load_moex": true,
+    "topup": false,
+    "allow_resample": true
+  }
+]

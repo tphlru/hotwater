@@ -1,0 +1,10 @@
+moexalgo
+pandas
+numpy
+numba
+lightweight-charts-esistjosh
+PyQt6
+PyQt5
+pywebview
+pywebview[qt]
+pyqtwebengine
