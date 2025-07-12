@@ -566,7 +566,9 @@ class DataConfig:
     def update_dates(self, df: pd.DataFrame):
         if not df.empty:
             self.start_date = df[self.date_column].min().strftime(self.date_format)
-            self.end_date = df[self.date_column].max().strftime(self.date_format)
+            # Не обновляем end_date если он равен "now" и включена дозагрузка
+            if not (self.end_date and self.end_date.lower() == "now" and self.topup):
+                self.end_date = df[self.date_column].max().strftime(self.date_format)
 
     def update_tf(self, df):
         if self.timeframe:

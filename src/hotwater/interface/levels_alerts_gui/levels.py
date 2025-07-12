@@ -172,26 +172,6 @@ class MarketDataApp:
         self.data_handler = data_handler
         self.signal_handler = SignalHandler()
 
-    async def get_candles(self, client, instrument_ids: List[str]):
-        candles = {}
-        for instrument_id in instrument_ids:
-            try:
-                candle_generator = client.get_all_candles(
-                    instrument_id=instrument_id,
-                    from_=datetime.now(tz=timezone.utc) - timedelta(days=365),
-                    interval=CandleInterval.CANDLE_INTERVAL_1_MIN,
-                )
-                # Convert async generator to list
-                candle_data = []
-                async for candle in candle_generator:
-                    candle_data.append(candle)
-                
-                candles[instrument_id] = candle_data
-                print(f"Candles for {instrument_id}: {len(candle_data)} candles")
-            except Exception as e:
-                print(f"Error getting candles for {instrument_id}: {e}")
-                candles[instrument_id] = []
-        return candles
     
     async def run(self):
         """Запускает приложение."""

@@ -21,7 +21,7 @@
     "data_format": "csv",
     "timeframe": "1min",
     "start_date": "2025-04-01 06:59:00",
-    "end_date": "2025-07-12 20:42:00",
+    "end_date": "now",
     "load_moex": false,
     "load_tinkoff": true,
     "topup": true,
