@@ -2,7 +2,7 @@ import asyncio
 import os
 import signal
 from typing import List, Optional, Callable, Any
-from collections import defaultdict
+from datetime import datetime, timedelta, timezone
 
 from tinkoff.invest import (
     AsyncClient,
@@ -10,9 +10,10 @@ from tinkoff.invest import (
     MarketDataRequest,
     SubscribeLastPriceRequest,
     SubscriptionAction,
+    CandleInterval,
 )
 from hotwater.data.secretconf import Secrets
-from hotwater.interface.levels_alerts_gui.helpers import get_figi_by_ticker
+from hotwater.data.helpers import get_figi_by_ticker
 
 
 class MarketDataStreamManager:
@@ -23,19 +24,25 @@ class MarketDataStreamManager:
         self.tickers = tickers
         self.stream: Optional[asyncio.StreamReader] = None
         self.min_interval = min_interval
-        self.last_processed = defaultdict(float)
+        self.last_processed = {}
+        self.instruments: List[LastPriceInstrument] = []
+        self.figi_list: List[str] = []
     
-    async def get_instruments(self) -> List[LastPriceInstrument]:
+    @staticmethod
+    async def get_instruments(client: AsyncClient, tickers: List[str]) -> List[LastPriceInstrument]:
         instruments = []
-        for ticker in self.tickers:
-            figi_data = await get_figi_by_ticker(ticker=ticker, client=self.client)
+        figi_list = []
+        for ticker in tickers:
+            figi_data = await get_figi_by_ticker(ticker=ticker, client=client)
             instrument = LastPriceInstrument(instrument_id=figi_data["figi"])
             instruments.append(instrument)
-        return instruments
+            figi_list.append(figi_data["figi"])
+        return instruments, figi_list
     
     async def create_request_iterator(self, subscribe: bool = True):
         """Создает итератор запросов для подписки/отписки."""
-        instruments = await self.get_instruments()
+        if not self.instruments:
+            self.instruments, self.figi_list = await self.get_instruments(self.client, self.tickers)
         
         action = (
             SubscriptionAction.SUBSCRIPTION_ACTION_SUBSCRIBE
@@ -46,7 +53,7 @@ class MarketDataStreamManager:
         req = MarketDataRequest(
             subscribe_last_price_request=SubscribeLastPriceRequest(
                 subscription_action=action,
-                instruments=instruments,
+                instruments=self.instruments,
             ),
         )
         yield req
@@ -84,7 +91,8 @@ class MarketDataStreamManager:
     async def can_process(self, instrument_id: str) -> bool:
         """Проверяет, можно ли обрабатывать данные для инструмента."""
         current_time = asyncio.get_event_loop().time()
-        if current_time - self.last_processed[instrument_id] >= self.min_interval:
+        last_time = self.last_processed.get(instrument_id, 0.0)
+        if current_time - last_time >= self.min_interval:
             self.last_processed[instrument_id] = current_time
             return True
         return False
@@ -129,7 +137,7 @@ class MarketDataProcessor:
                 # Обрабатываем данные с ограничением частоты
                 if hasattr(marketdata, 'last_price') and marketdata.last_price:
                     instrument_id = marketdata.last_price.instrument_uid
-                    if self.stream_manager.can_process(instrument_id):
+                    if await self.stream_manager.can_process(instrument_id):
                         await self._handle_market_data(marketdata)
         
         except asyncio.CancelledError:
@@ -163,11 +171,37 @@ class MarketDataApp:
         self.tickers = tickers
         self.data_handler = data_handler
         self.signal_handler = SignalHandler()
+
+    async def get_candles(self, client, instrument_ids: List[str]):
+        candles = {}
+        for instrument_id in instrument_ids:
+            try:
+                candle_generator = client.get_all_candles(
+                    instrument_id=instrument_id,
+                    from_=datetime.now(tz=timezone.utc) - timedelta(days=365),
+                    interval=CandleInterval.CANDLE_INTERVAL_1_MIN,
+                )
+                # Convert async generator to list
+                candle_data = []
+                async for candle in candle_generator:
+                    candle_data.append(candle)
+                
+                candles[instrument_id] = candle_data
+                print(f"Candles for {instrument_id}: {len(candle_data)} candles")
+            except Exception as e:
+                print(f"Error getting candles for {instrument_id}: {e}")
+                candles[instrument_id] = []
+        return candles
     
     async def run(self):
         """Запускает приложение."""
         async with AsyncClient(self.token) as client:
             stream_manager = MarketDataStreamManager(client, self.tickers)
+            # Initialize instruments and figi_list first
+            stream_manager.instruments, stream_manager.figi_list = await stream_manager.get_instruments(client, self.tickers)
+            
+            candles = await self.get_candles(client=client, instrument_ids=stream_manager.figi_list)
+            print(candles)
             processor = MarketDataProcessor(stream_manager, self.signal_handler, self.data_handler)
             
             await stream_manager.subscribe()
@@ -179,7 +213,8 @@ def main():
     TICKERS = ["SBER", "VTBR"]
     
     async def async_custom_data_handler(marketdata):
-        print(f"Асинхронно обрабатываем: {marketdata.last_price.price}")
+        print("update")
+        # print(f"Асинхронно обрабатываем: {marketdata.last_price.price}")
     
     app = MarketDataApp(TOKEN, TICKERS, data_handler=async_custom_data_handler)
     

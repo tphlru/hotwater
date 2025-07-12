@@ -9,3 +9,4 @@ pywebview
 pywebview[qt]
 pyqtwebengine
 async_throttle
+tinkoff-investments

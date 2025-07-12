@@ -5,11 +5,26 @@
     "data_path": "/home/timur/Projects/hotwater/hotwater/summer/src/hotwater/data/VTBR-30.csv",
     "date_column": "time",
     "data_format": "csv",
-    "timeframe": 30,
+    "timeframe": "30min",
     "start_date": "2020-01-03 10:00:00",
     "end_date": "2025-07-06 14:00:00",
     "load_moex": true,
+    "load_tinkoff": false,
     "topup": false,
+    "allow_resample": true
+  },
+  {
+    "ticker": "SBER",
+    "date_format": "%Y-%m-%d %H:%M:%S",
+    "data_path": "/home/timur/Projects/hotwater/hotwater/summer/src/hotwater/data/SBER-1min.csv",
+    "date_column": "time",
+    "data_format": "csv",
+    "timeframe": "1min",
+    "start_date": "2025-04-01 06:59:00",
+    "end_date": "2025-07-12 20:42:00",
+    "load_moex": false,
+    "load_tinkoff": true,
+    "topup": true,
     "allow_resample": true
   }
 ]
