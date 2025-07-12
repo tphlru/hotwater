@@ -2,6 +2,7 @@ import asyncio
 import os
 import signal
 from typing import List, Optional, Callable, Any
+from collections import defaultdict
 
 from tinkoff.invest import (
     AsyncClient,
@@ -12,17 +13,17 @@ from tinkoff.invest import (
 )
 from hotwater.data.secretconf import Secrets
 from hotwater.interface.levels_alerts_gui.helpers import get_figi_by_ticker
-from async_throttle import Throttle
 
 
 class MarketDataStreamManager:
     """Менеджер для работы с потоком рыночных данных."""
     
-    def __init__(self, client: AsyncClient, tickers: List[str]):
+    def __init__(self, client: AsyncClient, tickers: List[str], min_interval: float = 1.0):
         self.client = client
         self.tickers = tickers
         self.stream: Optional[asyncio.StreamReader] = None
-        self.throttler = Throttle(1 * len(tickers), len(tickers), 5)
+        self.min_interval = min_interval
+        self.last_processed = defaultdict(float)
     
     async def get_instruments(self) -> List[LastPriceInstrument]:
         instruments = []
@@ -80,6 +81,14 @@ class MarketDataStreamManager:
             except Exception as e:
                 print(f"Ошибка при закрытии стрима: {e}")
 
+    async def can_process(self, instrument_id: str) -> bool:
+        """Проверяет, можно ли обрабатывать данные для инструмента."""
+        current_time = asyncio.get_event_loop().time()
+        if current_time - self.last_processed[instrument_id] >= self.min_interval:
+            self.last_processed[instrument_id] = current_time
+            return True
+        return False
+
 
 class SignalHandler:    
     def __init__(self):
@@ -118,8 +127,10 @@ class MarketDataProcessor:
                     break
                 
                 # Обрабатываем данные с ограничением частоты
-                async with self.stream_manager.throttler:
-                    await self._handle_market_data(marketdata)
+                if hasattr(marketdata, 'last_price') and marketdata.last_price:
+                    instrument_id = marketdata.last_price.instrument_uid
+                    if self.stream_manager.can_process(instrument_id):
+                        await self._handle_market_data(marketdata)
         
         except asyncio.CancelledError:
             print("Получен сигнал отмены...")
@@ -167,9 +178,8 @@ def main():
     TOKEN = Secrets.t_invest_token
     TICKERS = ["SBER", "VTBR"]
     
-    
     async def async_custom_data_handler(marketdata):
-        print(f"Асинхронно обрабатываем: {marketdata}")
+        print(f"Асинхронно обрабатываем: {marketdata.last_price.price}")
     
     app = MarketDataApp(TOKEN, TICKERS, data_handler=async_custom_data_handler)
     
