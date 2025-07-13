@@ -4,6 +4,7 @@ import signal
 from typing import List, Optional, Callable, Any, Dict, Union
 from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
+import pandas as pd
 
 from tinkoff.invest import (
     AsyncClient,
@@ -16,6 +17,10 @@ from tinkoff.invest import (
     SubscriptionInterval,
     CandleInterval,
 )
+
+from lightweight_charts import Chart
+
+
 from hotwater.data.secretconf import Secrets
 from hotwater.data.helpers import get_figi_by_ticker, GMT_3
 from hotwater.data.dataloader import load_data, save_configs, load_configs, DataConfig
@@ -323,7 +328,7 @@ class MarketDataApp:
         self.subscriptions = {}  # name: BaseSubscription
         self.data_handlers = {}  # name: handler
         self.last_dts = {} # ticker:  dt
-        self.last_file_upd = datetime(2000) # dt
+        self.last_file_upd = datetime(2000, 1, 1) # dt
         self.dataconfs = {} # ticker: config
     
     def add_subscription(self, subscription: BaseSubscription, tickers: List[str], 
@@ -374,7 +379,13 @@ class MarketDataApp:
     
     async def run(self):
         """Запускает приложение."""
+        chart = Chart(toolbox=True, title="Сигнализатор уровней (hotwater)")
         self.last_dts = await self.preload_data()
+        df = self.historical_data['SBER']
+        df = df.set_index(pd.to_datetime(df["datetime"]))
+        df = df.drop(columns=["datetime"])
+        chart.set(df)
+        chart.show()
         print("Последние времена из исторических данных:")
         for ticker, dt in self.last_dts.items():
             print(f"  {ticker}: {dt}")
@@ -411,7 +422,7 @@ def main():
         prices = {}
         for name in ("open", "high", "low", "close"):
             prices[name] = price_value(getattr(candle, name))
-        prices['datetime'] = dt.strftime("%Y-%m-%d %H:%M:%S")
+        prices['datetime'] = dt
         prices['volume'] = int(candle.volume)
         time_diff = dt - app.last_dts[ticker]
         
