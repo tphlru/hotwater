@@ -2,7 +2,7 @@ import asyncio
 import os
 import signal
 from typing import List, Optional, Callable, Any, Dict, Union
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
 
 from tinkoff.invest import (
@@ -17,7 +17,7 @@ from tinkoff.invest import (
     CandleInterval,
 )
 from hotwater.data.secretconf import Secrets
-from hotwater.data.helpers import get_figi_by_ticker
+from hotwater.data.helpers import get_figi_by_ticker, GMT_3
 from hotwater.data.dataloader import load_data, save_configs, load_configs, DataConfig
 
 
@@ -28,6 +28,7 @@ class BaseSubscription(ABC):
         self.name = name
         self.instruments = []
         self.figi_list = []
+        self.figi_to_ticker = {}  # Словарь для хранения соответствия фига: тикер
     
     @abstractmethod
     async def get_instruments(self, client: AsyncClient, tickers: List[str]) -> List[Any]:
@@ -49,13 +50,16 @@ class LastPriceSubscription(BaseSubscription):
     async def get_instruments(self, client: AsyncClient, tickers: List[str]) -> List[LastPriceInstrument]:
         instruments = []
         figi_list = []
+        figi_to_ticker = {}
         for ticker in tickers:
             figi_data = await get_figi_by_ticker(ticker=ticker, client=client)
             instrument = LastPriceInstrument(instrument_id=figi_data["figi"])
             instruments.append(instrument)
             figi_list.append(figi_data["figi"])
+            figi_to_ticker[figi_data["figi"]] = ticker
         self.instruments = instruments
         self.figi_list = figi_list
+        self.figi_to_ticker = figi_to_ticker
         return instruments
     
     def create_request(self, subscribe: bool = True) -> MarketDataRequest:
@@ -83,6 +87,7 @@ class CandlesSubscription(BaseSubscription):
     async def get_instruments(self, client: AsyncClient, tickers: List[str]) -> List[CandleInstrument]:
         instruments = []
         figi_list = []
+        figi_to_ticker = {}
         for ticker in tickers:
             figi_data = await get_figi_by_ticker(ticker=ticker, client=client)
             instrument = CandleInstrument(
@@ -91,8 +96,10 @@ class CandlesSubscription(BaseSubscription):
             )
             instruments.append(instrument)
             figi_list.append(figi_data["figi"])
+            figi_to_ticker[figi_data["figi"]] = ticker
         self.instruments = instruments
         self.figi_list = figi_list
+        self.figi_to_ticker = figi_to_ticker
         return instruments
     
     def create_request(self, subscribe: bool = True) -> MarketDataRequest:
@@ -312,9 +319,12 @@ class MarketDataApp:
         self.token = token
         self.signal_handler = SignalHandler()
         self.dataconf_path = dataconf_path or "src/hotwater/interface/levels_alerts_gui/dataconfig.json"
-        self.historical_datum = {} # ticker: df
+        self.historical_data = {} # ticker: df
         self.subscriptions = {}  # name: BaseSubscription
         self.data_handlers = {}  # name: handler
+        self.last_dts = {} # ticker:  dt
+        self.last_file_upd = datetime(2000) # dt
+        self.dataconfs = {} # ticker: config
     
     def add_subscription(self, subscription: BaseSubscription, tickers: List[str], 
                         data_handler: Callable):
@@ -339,6 +349,7 @@ class MarketDataApp:
         )
 
     async def preload_data(self):
+        """Возвращает словарь datetime последних загруженных свечек"""
         # Собираем все уникальные тикеры из всех подписок
         all_tickers = set()
         for subscription, tickers in self.subscriptions.values():
@@ -355,14 +366,18 @@ class MarketDataApp:
                 configs.append(self.create_basic_dataonf(t))
         
         for c in configs:
-            self.historical_datum[c.ticker] = await load_data(c)
+            self.historical_data[c.ticker] = await load_data(c)
+            self.dataconfs[c.ticker] = c
         save_configs(configs=configs, path=self.dataconf_path)
+        return {key: df.iloc[-1]['datetime'].to_pydatetime().replace(tzinfo=GMT_3) for key, df in self.historical_data.items()}
 
     
     async def run(self):
         """Запускает приложение."""
-        await self.preload_data()
-        print(self.historical_datum)
+        self.last_dts = await self.preload_data()
+        print("Последние времена из исторических данных:")
+        for ticker, dt in self.last_dts.items():
+            print(f"  {ticker}: {dt}")
         
         async with AsyncClient(self.token) as client:
             stream_manager = MarketDataStreamManager(client, min_interval=10)
@@ -386,8 +401,45 @@ def main():
         print(f"Асинхронно обрабатываем: {marketdata.last_price.price}")
     
     async def async_candles_handler(marketdata):
-        print("Candle update")
-        print(f"Свеча: {marketdata.candle}")
+        candle = marketdata.candle
+        dt = candle.time.astimezone(GMT_3)
+        ticker = candles_sub.figi_to_ticker[candle.figi]
+
+        def price_value(price):
+            return price.units + price.nano / 1_000_000_000
+
+        prices = {}
+        for name in ("open", "high", "low", "close"):
+            prices[name] = price_value(getattr(candle, name))
+        prices['datetime'] = dt.strftime("%Y-%m-%d %H:%M:%S")
+        prices['volume'] = int(candle.volume)
+        time_diff = dt - app.last_dts[ticker]
+        
+        if time_diff.total_seconds() == 60:  # 1 минута
+            app.last_dts[ticker] = dt
+            app.historical_data[ticker].loc[len(app.historical_data[ticker])] = prices
+            # print("Через 1 минуту")
+            print(f"Свеча (неполная, предыдущая завершена) {ticker} в {dt}")
+        elif time_diff.total_seconds() == 0:  # Та же, обновим
+            app.historical_data[ticker].loc[len(app.historical_data[ticker])-1] = prices
+            # print("Обновление (повторка)")
+        elif time_diff.total_seconds() > 60:
+            app.last_dts[ticker] = dt
+            timeloss = round(time_diff.total_seconds() / 60)
+            app.historical_data[ticker].loc[len(app.historical_data[ticker])] = prices
+            print(f"!!! Потеряно {timeloss} минут")
+        
+        if datetime.now() - app.last_file_upd > timedelta(minutes=5):
+            print("Обновляем файл")
+            app.last_file_upd = datetime.now()
+            save_path = app.dataconfs[ticker].data_path
+            file_format = app.dataconfs[ticker].data_format
+            df = app.historical_data[ticker]
+            if file_format == "parquet":
+                df.to_parquet(save_path, index=False, engine="pyarrow", compression="snappy")
+            elif file_format == "csv":
+                df.to_csv(save_path, index=False, encoding="utf-8")
+
     
     app = MarketDataApp(TOKEN)
     

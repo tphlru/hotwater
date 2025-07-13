@@ -1,8 +1,9 @@
 from tinkoff.invest.utils import quotation_to_decimal
 import re
 from typing import Union, Optional
-from datetime import timedelta
+from datetime import timedelta, timezone
 
+GMT_3 = timezone(timedelta(hours=3), name='GMT+3')
 
 class Timeframe:
     """
