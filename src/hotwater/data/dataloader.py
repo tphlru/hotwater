@@ -616,14 +616,14 @@ def save_configs(configs: List[DataConfig], path: str):
         json.dump(config_dicts, f, indent=2)
 
 
-def load_data(dataconfig: DataConfig) -> pd.DataFrame:
+async def load_data(dataconfig: DataConfig) -> pd.DataFrame:
     downloaded = False
     match dataconfig.data_format:
         case "parquet":
             if (
                 not os.path.exists(dataconfig.data_path) and (dataconfig.load_moex or dataconfig.load_tinkoff)
             ) or dataconfig.topup:
-                try_download_data(dataconfig)
+                await try_download_data(dataconfig)
 
             df = pd.read_parquet(
                 dataconfig.data_path,
@@ -633,7 +633,7 @@ def load_data(dataconfig: DataConfig) -> pd.DataFrame:
             if (
                 not os.path.exists(dataconfig.data_path) and (dataconfig.load_moex or dataconfig.load_tinkoff)
             ) or dataconfig.topup:
-                try_download_data(dataconfig)
+                await try_download_data(dataconfig)
 
             df = pd.read_csv(
                 dataconfig.data_path,
@@ -675,7 +675,7 @@ def load_data(dataconfig: DataConfig) -> pd.DataFrame:
     raise ValueError(f"Данных в файле {dataconfig.data_path} нет. ")
 
 
-def try_download_data(dataconfig: DataConfig):
+async def try_download_data(dataconfig: DataConfig):
     if dataconfig.load_moex:
         assert dataconfig.load_moex, "Загрузка данных с MOEX не включена."
         if not dataconfig.timeframe:
@@ -719,7 +719,7 @@ def try_download_data(dataconfig: DataConfig):
         # Если это не дозагрузка и end_date было "now", обновляем конфигурацию
         if not dataconfig.topup and dataconfig.end_date and dataconfig.end_date.lower() == "now":
             # Загружаем данные для получения фактической end_date
-            df = load_data(dataconfig)
+            df = await load_data(dataconfig)
             if not df.empty:
                 dataconfig.end_date = df["datetime"].max().strftime(dataconfig.date_format)
                 save_single(dataconfig)
@@ -768,8 +768,8 @@ def try_download_data(dataconfig: DataConfig):
         start_dt = dataconfig.get_start_datetime()
         end_dt = dataconfig.get_end_datetime()
         
-        # Запускаем асинхронную загрузку
-        asyncio.run(download_tinkoff_history(
+        # Запускаем асинхронную загрузку напрямую
+        await download_tinkoff_history(
             ticker=dataconfig.ticker,
             start_dt=start_dt,
             end_dt=end_dt,
@@ -780,12 +780,12 @@ def try_download_data(dataconfig: DataConfig):
             show_progress=True,
             topup=dataconfig.topup,
             resample_target=int(tf.minutes) if resample else None,
-        ))
+        )
         
         # Если это не дозагрузка и end_date было "now", обновляем конфигурацию
         if not dataconfig.topup and dataconfig.end_date and dataconfig.end_date.lower() == "now":
             # Загружаем данные для получения фактической end_date
-            df = load_data(dataconfig)
+            df = await load_data(dataconfig)
             if not df.empty:
                 dataconfig.end_date = df["datetime"].max().strftime(dataconfig.date_format)
                 save_single(dataconfig)
@@ -794,6 +794,9 @@ def try_download_data(dataconfig: DataConfig):
 
 
 if __name__ == "__main__":
-    configs = load_configs()
-    df = load_data(configs[0])
-    print(df.head())
+    async def main():
+        configs = load_configs()
+        df = await load_data(configs[0])
+        print(df.head())
+    
+    asyncio.run(main())

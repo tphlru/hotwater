@@ -1,8 +1,8 @@
 [
   {
-    "ticker": "VTBR",
+    "ticker": "SBER",
     "date_format": "%Y-%m-%d %H:%M:%S",
-    "data_path": "/home/timur/Projects/hotwater/hotwater/summer/src/hotwater/data/VTBR-1min.parquet",
+    "data_path": "/home/timur/Projects/hotwater/hotwater/summer/src/hotwater/data/SBER-1min.parquet",
     "date_column": "time",
     "data_format": "parquet",
     "timeframe": "1min",
@@ -14,9 +14,9 @@
     "allow_resample": false
   },
   {
-    "ticker": "SBER",
+    "ticker": "VTBR",
     "date_format": "%Y-%m-%d %H:%M:%S",
-    "data_path": "/home/timur/Projects/hotwater/hotwater/summer/src/hotwater/data/SBER-1min.parquet",
+    "data_path": "/home/timur/Projects/hotwater/hotwater/summer/src/hotwater/data/VTBR-1min.parquet",
     "date_column": "time",
     "data_format": "parquet",
     "timeframe": "1min",
