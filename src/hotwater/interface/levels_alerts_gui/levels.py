@@ -2,6 +2,8 @@ import asyncio
 import os
 import signal
 from typing import List, Optional, Callable, Any, Dict
+from typing import AsyncIterable
+
 from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
 import pandas as pd
@@ -16,6 +18,7 @@ from tinkoff.invest import (
     SubscriptionAction,
     SubscriptionInterval,
 )
+from tinkoff.invest.async_services import AsyncServices
 
 from lightweight_charts import Chart
 
@@ -36,7 +39,7 @@ class BaseSubscription(ABC):
 
     @abstractmethod
     async def get_instruments(
-        self, client: AsyncClient, tickers: List[str]
+        self, client: AsyncServices, tickers: List[str]
     ) -> List[Any]:
         """Получает инструменты для подписки."""
         pass
@@ -54,7 +57,7 @@ class LastPriceSubscription(BaseSubscription):
         super().__init__(name)
 
     async def get_instruments(
-        self, client: AsyncClient, tickers: List[str]
+        self, client: AsyncServices, tickers: List[str]
     ) -> List[LastPriceInstrument]:
         instruments = []
         figi_list = []
@@ -97,7 +100,7 @@ class CandlesSubscription(BaseSubscription):
         self.interval = interval
 
     async def get_instruments(
-        self, client: AsyncClient, tickers: List[str]
+        self, client: AsyncServices, tickers: List[str]
     ) -> List[CandleInstrument]:
         instruments = []
         figi_list = []
@@ -133,10 +136,9 @@ class CandlesSubscription(BaseSubscription):
 class MarketDataStreamManager:
     """Менеджер для работы с потоками рыночных данных."""
 
-    def __init__(self, client: Any, min_interval: float = 1.0):
+    def __init__(self, client: AsyncServices, min_interval: float = 1.0):
         self.client = client
-        self.market_data_stream_manager = client.create_market_data_stream()
-        self.streams: Dict[str, Any] = {}
+        self.streams: Dict[str, AsyncIterable] = {}
         self.subscriptions: Dict[str, BaseSubscription] = {}
         self.min_interval = min_interval
         self.last_processed = {}
@@ -156,9 +158,7 @@ class MarketDataStreamManager:
             raise ValueError(f"Подписка {subscription_name} не найдена")
 
         subscription = self.subscriptions[subscription_name]
-        req = subscription.create_request(subscribe)
-        yield req
-
+        yield subscription.create_request(subscribe)
         # Бесконечный цикл чтобы итератор не завершался
         while True:
             await asyncio.sleep(10)
@@ -168,10 +168,11 @@ class MarketDataStreamManager:
         if subscription_name not in self.subscriptions:
             raise ValueError(f"Подписка {subscription_name} не найдена")
 
-        subscription = self.subscriptions[subscription_name]
-        req = subscription.create_request(subscribe=True)
-        self.market_data_stream_manager.subscribe(req)
-        self.streams[subscription_name] = self.market_data_stream_manager.__aiter__()
+        self.streams[subscription_name] = (
+            self.client.market_data_stream.market_data_stream(
+                self.create_request_iterator(subscription_name, subscribe=True)
+            )
+        )
 
     async def subscribe_all(self):
         """Подписывается на все добавленные подписки."""
@@ -181,11 +182,11 @@ class MarketDataStreamManager:
     async def unsubscribe(self, subscription_name: str):
         """Отписывается от потока рыночных данных."""
         try:
-            if subscription_name not in self.subscriptions:
-                raise ValueError(f"Подписка {subscription_name} не найдена")
-            subscription = self.subscriptions[subscription_name]
-            req = subscription.create_request(subscribe=False)
-            self.market_data_stream_manager.unsubscribe(req)
+            unsubscribe_stream = self.client.market_data_stream.market_data_stream(
+                self.create_request_iterator(subscription_name, subscribe=False)
+            )
+            await unsubscribe_stream.__anext__()  # type: ignore[attr-defined]
+            await unsubscribe_stream.aclose()  # type: ignore[attr-defined]
             print(f"Отписка от {subscription_name} отправлена успешно.")
         except Exception as e:
             print(f"Ошибка при отписке от {subscription_name}: {e}")
@@ -199,7 +200,7 @@ class MarketDataStreamManager:
         """Закрывает конкретный стрим."""
         if subscription_name in self.streams:
             try:
-                await self.streams[subscription_name].aclose()
+                await self.streams[subscription_name].aclose()  # type: ignore[attr-defined]
                 del self.streams[subscription_name]
             except Exception as e:
                 print(f"Ошибка при закрытии стрима {subscription_name}: {e}")
@@ -392,12 +393,11 @@ class MarketDataApp:
         if os.path.exists(self.dataconf_path):
             configs = load_configs(self.dataconf_path)
 
-        missing = [
+        if missing := [
             ticker
             for ticker in all_tickers
             if ticker not in [i.ticker for i in configs]
-        ]
-        if missing:
+        ]:
             print(f"Следующие тикеры отсутствуют в конфигурации: {missing}")
             for t in missing:
                 configs.append(self.create_basic_dataonf(t))
@@ -424,8 +424,10 @@ class MarketDataApp:
         for ticker, dt in self.last_dts.items():
             print(f"  {ticker}: {dt}")
 
-        async with AsyncClient(self.token) as client:
-            stream_manager = MarketDataStreamManager(client, min_interval=5)
+        client = AsyncClient(self.token)
+        services = await client.__aenter__()
+        try:
+            stream_manager = MarketDataStreamManager(services, min_interval=5)
 
             # Добавляем все подписки в менеджер
             for subscription, tickers in self.subscriptions.values():
@@ -437,6 +439,8 @@ class MarketDataApp:
 
             await stream_manager.subscribe_all()
             await processor.process_market_data()
+        finally:
+            await client.__aexit__(None, None, None)
 
 
 def main():
@@ -468,6 +472,7 @@ def main():
                 )
                 return
             tick = pd.Series({"time": dt, "price": price})
+            print("[DEBUG] tick for update_from_tick:", tick)
             app.chart.update_from_tick(tick)
 
     async def async_candles_handler(marketdata):
@@ -498,6 +503,7 @@ def main():
                     line = line.drop("datetime")
                 # Переупорядочить поля для update
                 line = line[["time", "open", "high", "low", "close", "volume"]]
+
                 app.chart.update(line)
             print(f"Свеча (неполная, предыдущая завершена) {ticker} в {dt}")
         elif time_diff.total_seconds() == 0:  # Та же, обновим
