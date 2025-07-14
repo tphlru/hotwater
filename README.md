@@ -7,7 +7,7 @@ This is a Python package for charting and data tools for the Hotwater project.
 From the root of the repository, run:
 
 ```bash
-pip install -e ./hotwater/summer
+pip install -e .
 ```
 
 ## Usage
@@ -17,7 +17,7 @@ pip install -e ./hotwater/summer
 You can now import modules from anywhere in the project using absolute imports, e.g.:
 
 ```python
-from data.dataloader import load_configs
+from hotwater.data.dataloader import load_data
 ```
 
 ## Structure
@@ -27,5 +27,3 @@ from data.dataloader import load_configs
 - `interface/` — UI and charting
 
 ---
-
-Add more usage and development notes here.
