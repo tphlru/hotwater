@@ -62,8 +62,8 @@ async def download_tinkoff_history(
     
     # Проверяем ограничение в 3 месяца
     if (end_dt - start_dt).days > 90:
-        logging.warning(f"Период загрузки превышает 3 месяца. Ограничиваем до 3 месяцев с {start_dt}")
-        end_dt = start_dt + timedelta(days=90)
+        logging.warning(f"Период загрузки превышает 3 месяца. Обрезаем старые данные, end_date в приоритете. Ограничиваем до 3 месяцев до {end_dt}")
+        start_dt = end_dt - timedelta(days=90)
     
     now = datetime.now(timezone.utc)
     df_exist = None
