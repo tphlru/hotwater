@@ -468,7 +468,6 @@ def main():
                 )
                 return
             tick = pd.Series({"time": dt, "price": price})
-            print("[DEBUG] tick for update_from_tick:", tick)
             app.chart.update_from_tick(tick)
 
     async def async_candles_handler(marketdata):
@@ -499,13 +498,6 @@ def main():
                     line = line.drop("datetime")
                 # Переупорядочить поля для update
                 line = line[["time", "open", "high", "low", "close", "volume"]]
-                print("[DEBUG] fixed line (Series):", line)
-                print("[DEBUG] fixed line.index:", line.index)
-                print("[DEBUG] fixed line.to_dict():", line.to_dict())
-                print(
-                    "[DEBUG] fixed line types:",
-                    {k: type(v) for k, v in line.to_dict().items()},
-                )
                 app.chart.update(line)
             print(f"Свеча (неполная, предыдущая завершена) {ticker} в {dt}")
         elif time_diff.total_seconds() == 0:  # Та же, обновим
