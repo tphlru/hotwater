@@ -21,35 +21,56 @@ from hotwater.data.helpers import (
 
 
 class LevelsAlerts(MarketDataApp):
-    def __init__(self, chart: Chart, t_token: str, tickers: list):
+    def __init__(self, chart: Chart, t_token: str, tickers: list, visible_ticker: str):
         self.tickers: list = tickers
+        self.current_price: dict = {}
+        self.show_ticker: str = visible_ticker
         super().__init__(t_token, chart)
         self._setup_subs()
+
+    async def change_visible_ticker(self, ticker):
+        if ticker not in self.tickers:
+            raise KeyError(
+                "При change_visible_ticker тикер должен быть в исходном списке"
+            )
+        self.show_ticker = ticker
+        await self.stream_manager.unsubscribe("candles")
+        self.add_subscription(
+            CandlesSubscription(
+                "candles", SubscriptionInterval.SUBSCRIPTION_INTERVAL_ONE_MINUTE
+            ),
+            [self.show_ticker],
+            self.async_candles_handler,
+        )
+        await self.stream_manager.subscribe("candles")
+
+    def update_candle_chart(self):
+        line = self.historical_data[self.show_ticker].iloc[-2].copy()
+        line["time"] = line["time"].strftime("%Y-%m-%dT%H:%M:%S")
+        self.chart.update(line)
+
+    def update_tick_chart(self, dt, price):
+        formatted_dt = dt.strftime("%Y-%m-%dT%H:%M:%S")
+        # не обновлять по тикам, если последняя свеча отстаёт более чем на 1 минуту
+        last_candle_dt = self.last_dts.get("VTBR")
+        if last_candle_dt is not None and (dt - last_candle_dt).total_seconds() > 60:
+            print(
+                f"[DEBUG] Пропуск update_from_tick: tick_dt={dt}, last_candle_dt={last_candle_dt}"
+            )
+            return
+        tick = pd.Series({"time": formatted_dt, "price": price})
+        self.chart.update_from_tick(tick)
 
     async def async_last_price_handler(self, marketdata):
         print("Last price update")
         figi = marketdata.last_price.figi
         ticker = self.subscriptions["last_price"][0].figi_to_ticker.get(figi)
-        if ticker == "VTBR":
-            dt = ensure_timezone(marketdata.last_price.time, GMT_3).strftime(
-                "%Y-%m-%dT%H:%M:%S"
-            )
-
-            price = quotation_to_float(marketdata.last_price.price)
-            # не обновлять по тикам, если последняя свеча отстаёт более чем на 1 минуту
-            last_candle_dt = self.last_dts.get("VTBR")
-            tick_dt = ensure_timezone(marketdata.last_price.time, GMT_3)
-            if (
-                last_candle_dt is not None
-                and (tick_dt - last_candle_dt).total_seconds() > 60
-            ):
-                print(
-                    f"[DEBUG] Пропуск update_from_tick: tick_dt={tick_dt}, last_candle_dt={last_candle_dt}"
-                )
-                return
-            tick = pd.Series({"time": dt, "price": price})
-            print("[DEBUG] tick for update_from_tick:", tick)
-            self.chart.update_from_tick(tick)
+        price = quotation_to_float(marketdata.last_price.price)
+        dt = ensure_timezone(marketdata.last_price.time, GMT_3)
+        self.current_price[ticker] = price
+        print("\n".join(f"{k}: {v}" for k, v in self.current_price.items()))
+        if ticker == self.show_ticker:
+            self.update_tick_chart(dt, price)
 
     async def async_candles_handler(self, marketdata):
         candle = marketdata.candle
@@ -59,29 +80,22 @@ class LevelsAlerts(MarketDataApp):
         prices = {}
         for name in ("open", "high", "low", "close"):
             prices[name] = quotation_to_float(getattr(candle, name))
-        prices["datetime"] = dt
+        prices["time"] = dt
         prices["volume"] = int(candle.volume)
         time_diff = dt - self.last_dts[ticker]
 
+        new_candle = False
         if time_diff.total_seconds() == 60:  # 1 минута
             self.last_dts[ticker] = dt
             self.historical_data[ticker] = pd.concat(
                 [self.historical_data[ticker], pd.DataFrame([prices])],
                 ignore_index=True,
             )
-            if ticker == "VTBR":
-                line = self.historical_data[ticker].iloc[-2].copy()
-                if "datetime" in line:
-                    dt_val = line["datetime"]
-                    line["time"] = pd.to_datetime(dt_val).strftime("%Y-%m-%dT%H:%M:%S")
-                    line = line.drop("datetime")
-                # Переупорядочить поля для update
-                line = line[["time", "open", "high", "low", "close", "volume"]]
-
-                self.chart.update(line)
+            new_candle = True
             print(f"Свеча (неполная, предыдущая завершена) {ticker} в {dt}")
         elif time_diff.total_seconds() == 0:  # Та же, обновим
             self.historical_data[ticker].iloc[-1] = prices
+            new_candle = False
             # print("Обновление (повторка)")
         elif time_diff.total_seconds() > 60:
             self.last_dts[ticker] = dt
@@ -90,11 +104,11 @@ class LevelsAlerts(MarketDataApp):
                 [self.historical_data[ticker], pd.DataFrame([prices])],
                 ignore_index=True,
             )
-            if ticker == "VTBR":
-                line = self.historical_data[ticker].iloc[-2]
-                print(line)
-                self.chart.update(line)
+            new_candle = True
             print(f"!!! Потеряно {timeloss} минут")
+
+        if new_candle and ticker == self.show_ticker:
+            self.update_candle_chart()
 
     def _setup_subs(self):
         # Добавляем подписку на последние цены
@@ -107,7 +121,7 @@ class LevelsAlerts(MarketDataApp):
             CandlesSubscription(
                 "candles", SubscriptionInterval.SUBSCRIPTION_INTERVAL_ONE_MINUTE
             ),
-            self.tickers,
+            [self.show_ticker],
             self.async_candles_handler,
         )
 
@@ -122,7 +136,9 @@ class LevelsAlerts(MarketDataApp):
         if ticker not in self.last_dts:
             self.last_dts = await self.preload_data()
 
-        df2 = standardize_datetime_column(self.historical_data[ticker], GMT_3)
+        df2 = self.historical_data[ticker] = standardize_datetime_column(
+            self.historical_data[ticker], GMT_3
+        )
         if df.empty:
             return df2
         df = standardize_datetime_column(df, GMT_3)
@@ -140,12 +156,6 @@ class LevelsAlerts(MarketDataApp):
         return self.historical_data[ticker]
 
     async def run(self):
-        df = self.historical_data["VTBR"].copy()
-        df["time"] = pd.to_datetime(df["datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
-        df = df[["time", "open", "high", "low", "close", "volume"]]
-        self.chart.set(df)
-        self.chart.show()
-
         print("Последние времена из исторических данных:")
         for ticker, dt in self.last_dts.items():
             print(f"  {ticker}: {dt}")
@@ -153,22 +163,22 @@ class LevelsAlerts(MarketDataApp):
         client = AsyncClient(self.token)
         services = await client.__aenter__()
         try:
-            stream_manager = MarketDataStreamManager(services, min_interval=5)
+            self.stream_manager = MarketDataStreamManager(services, min_interval=5)
 
             # Добавляем все подписки в менеджер
             for subscription, tickers in self.subscriptions.values():
-                await stream_manager.add_subscription(subscription, tickers)
+                await self.stream_manager.add_subscription(subscription, tickers)
 
             processor = MarketDataProcessor(
-                stream_manager, self.signal_handler, self.data_handlers
+                self.stream_manager, self.signal_handler, self.data_handlers
             )
 
-            await stream_manager.subscribe_all()
+            await self.stream_manager.subscribe_all()
             await processor.process_market_data()
         finally:
             await client.__aexit__(None, None, None)
 
-    def levels_mod(self, chart: Chart):
+    def mod(self, chart: Chart):
         pass
 
 
@@ -176,10 +186,16 @@ async def main():
     from hotwater.data.secretconf import Secrets
 
     tickers = ["VTBR", "SBER", "AFLT"]
+    show_ticker = "VTBR"
     chart = Chart(toolbox=True)
-    control = LevelsAlerts(chart, Secrets.t_invest_token, tickers)
+    control = LevelsAlerts(chart, Secrets.t_invest_token, tickers, show_ticker)
     for t in tickers:
         await control.fresh_tail(t)
+    df = control.historical_data[show_ticker].copy()
+    df["time"] = df["time"].dt.strftime("%Y-%m-%dT%H:%M:%S")
+    chart.set(df)
+    chart.show()
+
     await control.run()
 
 
