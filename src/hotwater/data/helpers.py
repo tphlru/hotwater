@@ -1,11 +1,14 @@
 from tinkoff.invest.utils import quotation_to_decimal
 import re
-from typing import Union
+from typing import Union, Literal, Optional
 from datetime import timedelta as timedelta_dt
-from datetime import timezone
+from datetime import datetime
 
+# from datetime import timezone
+from zoneinfo import ZoneInfo
+import pandas as pd
 
-GMT_3 = timezone(timedelta_dt(hours=3), name="GMT+3")
+GMT_3 = ZoneInfo("Europe/Moscow")  # timezone(timedelta_dt(hours=3), name="GMT+3")
 
 
 class Timeframe:
@@ -195,8 +198,8 @@ class Timeframe:
         """Конвертирует в формат CandleInterval для Tinkoff API."""
         try:
             from tinkoff.invest import CandleInterval
-        except ImportError:
-            raise ImportError("Tinkoff Invest API not available")
+        except ImportError as e:
+            raise ImportError("Tinkoff Invest API not available") from e
 
         # Маппинг стандартных таймфреймов
         tinkoff_mapping = {
@@ -221,9 +224,7 @@ class Timeframe:
         if minutes in moex_periods:
             return int(minutes)
         else:
-            # Возвращаем ближайший поддерживаемый период
-            closest = min(moex_periods, key=lambda x: abs(x - minutes))
-            return closest
+            return min(moex_periods, key=lambda x: abs(x - minutes))
 
     def to_pandas_freq(self) -> str:
         """Конвертирует в формат частоты pandas для resample."""
@@ -334,7 +335,64 @@ class Timeframe:
         return cls(timedelta_dt(days=days))
 
 
-# Удаляем устаревшие функции (timeframe_to_tinkoff_interval и др.)
+def ensure_timezone(dt: datetime, tz: ZoneInfo) -> datetime:
+    return dt.replace(tzinfo=tz) if dt.tzinfo is None else dt.astimezone(tz)
+
+
+def standardize_datetime_column(
+    df: pd.DataFrame,
+    tz: ZoneInfo,
+    column: Optional[str] = None,
+    output_format: Literal["datetime", "iso"] = "datetime",
+) -> pd.DataFrame:
+    possible_names = ["time", "datetime"]
+    dt_col = None
+
+    if column:
+        if column in df.columns:
+            dt_col = column
+        elif column == "index":
+            dt_col = "index"
+    else:
+        for name in possible_names:
+            if name in df.columns:
+                dt_col = name
+                break
+        if dt_col is None and (
+            pd.api.types.is_datetime64_any_dtype(df.index)
+            or isinstance(df.index[0], (str, datetime))
+        ):
+            dt_col = "index"
+
+    if dt_col is None:
+        raise ValueError(
+            "Не найдена колонка с датой-временем или индекс подходящего типа."
+        )
+
+    if dt_col == "index":
+        dt_series = pd.Series(df.index, index=df.index)
+    else:
+        dt_series = df[dt_col]
+
+    if not pd.api.types.is_datetime64_any_dtype(dt_series):
+        dt_series = pd.to_datetime(dt_series, errors="coerce")
+
+    dt_series = dt_series.dropna()
+    dt_series = dt_series.map(lambda x: ensure_timezone(x, tz))
+    if output_format == "iso":
+        time_col = dt_series.dt.strftime("%Y-%m-%dT%H:%M:%S")
+    else:
+        time_col = dt_series
+
+    new_df = df.loc[dt_series.index].copy()
+    new_df.reset_index(drop=True, inplace=True)
+    new_df["time"] = time_col
+
+    # Удаляем оригинальную
+    if dt_col in new_df.columns:
+        new_df.drop(columns=[dt_col], inplace=True)
+
+    return new_df
 
 
 async def get_figi_by_ticker(ticker: str, client):

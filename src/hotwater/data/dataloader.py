@@ -308,9 +308,9 @@ def download_moex_history(
 
     # Загрузка новых данных
     df = pd.DataFrame()
+    progress = None
     if period.minutes == 5:
         chunk_start = start_dt.date()
-        progress = None
         ticker = Ticker(secid)
         if not isinstance(ticker, Index):
             df_first = ticker.tradestats(start=chunk_start, end=now.date())
@@ -383,7 +383,6 @@ def download_moex_history(
             )
     else:
         chunk_start = start_dt
-        progress = None
         df_first = Ticker(secid).candles(
             start=chunk_start,
             end=now,
@@ -464,11 +463,10 @@ def download_moex_history(
                 "time_end",
             ]
         ].copy()
+    elif secid == "IMOEX":
+        df = df[["time", "open", "close", "high", "low", "value"]].copy()
     else:
-        if secid == "IMOEX":
-            df = df[["time", "open", "close", "high", "low", "value"]].copy()
-        else:
-            df = df[["time", "open", "close", "high", "low", "volume"]].copy()
+        df = df[["time", "open", "close", "high", "low", "volume"]].copy()
 
     # === объединение и удаление дублей ===
     if topup and df_exist is not None and not df_exist.empty:

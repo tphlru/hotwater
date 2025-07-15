@@ -6,10 +6,8 @@ from typing import AsyncIterable
 
 from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
-import pandas as pd
 
 from tinkoff.invest import (
-    AsyncClient,
     LastPriceInstrument,
     CandleInstrument,
     MarketDataRequest,
@@ -23,8 +21,12 @@ from tinkoff.invest.async_services import AsyncServices
 from lightweight_charts import Chart
 
 
-from hotwater.data.secretconf import Secrets
-from hotwater.data.helpers import get_figi_by_ticker, GMT_3, Timeframe
+from hotwater.data.helpers import (
+    get_figi_by_ticker,
+    GMT_3,
+    Timeframe,
+    ensure_timezone,
+)
 from hotwater.data.dataloader import load_data, save_configs, load_configs, DataConfig
 
 
@@ -343,19 +345,18 @@ class MarketDataProcessor:
 class MarketDataApp:
     """Основное приложение для работы с рыночными данными."""
 
-    def __init__(self, token: str, dataconf_path=None):
+    def __init__(self, token: str, chart: Chart, dataconf_path=None):
         self.token = token
         self.signal_handler = SignalHandler()
-        self.dataconf_path = (
-            dataconf_path or "src/hotwater/interface/levels_alerts_gui/dataconfig.json"
-        )
+        self.dataconf_path = dataconf_path or "src/hotwater/back/dataconfig.json"
         self.historical_data = {}  # ticker: df
         self.subscriptions = {}  # name: BaseSubscription
         self.data_handlers = {}  # name: handler
         self.last_dts = {}  # ticker:  dt
         self.last_file_upd = datetime(2000, 1, 1)  # dt
         self.dataconfs = {}  # ticker: config
-        self.chart = Chart(toolbox=True, title="Сигнализатор уровней (hotwater)")
+        self.chart = chart
+        # self.chart = Chart(toolbox=True, title="Сигнализатор уровней (hotwater)")
 
     def add_subscription(
         self, subscription: BaseSubscription, tickers: List[str], data_handler: Callable
@@ -364,7 +365,7 @@ class MarketDataApp:
         self.subscriptions[subscription.name] = (subscription, tickers)
         self.data_handlers[subscription.name] = data_handler
 
-    def create_basic_dataonf(self, ticker):
+    def create_basic_dataconf(self, ticker, len_d=90):
         return DataConfig(
             ticker=ticker,
             date_format="%Y-%m-%d %H:%M:%S",
@@ -372,7 +373,7 @@ class MarketDataApp:
             date_column="time",
             data_format="parquet",
             timeframe=Timeframe.from_minutes(1),
-            start_date=(datetime.now() - timedelta(days=90)).strftime(
+            start_date=(datetime.now() - timedelta(days=len_d)).strftime(
                 "%Y-%m-%d %H:%M:%S"
             ),
             end_date="now",
@@ -400,145 +401,13 @@ class MarketDataApp:
         ]:
             print(f"Следующие тикеры отсутствуют в конфигурации: {missing}")
             for t in missing:
-                configs.append(self.create_basic_dataonf(t))
+                configs.append(self.create_basic_dataconf(t))
 
         for c in configs:
             self.historical_data[c.ticker] = await load_data(c)
             self.dataconfs[c.ticker] = c
         save_configs(configs=configs, path=self.dataconf_path)
         return {
-            key: df.iloc[-1]["datetime"].to_pydatetime().replace(tzinfo=GMT_3)
+            key: ensure_timezone(df.iloc[-1]["datetime"].to_pydatetime(), GMT_3)
             for key, df in self.historical_data.items()
         }
-
-    async def run(self):
-        """Запускает приложение."""
-        self.last_dts = await self.preload_data()
-        df = self.historical_data["VTBR"].copy()
-        df["time"] = pd.to_datetime(df["datetime"]).dt.strftime("%Y-%m-%dT%H:%M:%S")
-        df = df[["time", "open", "high", "low", "close", "volume"]]
-        self.chart.set(df)
-        self.chart.show()
-
-        print("Последние времена из исторических данных:")
-        for ticker, dt in self.last_dts.items():
-            print(f"  {ticker}: {dt}")
-
-        client = AsyncClient(self.token)
-        services = await client.__aenter__()
-        try:
-            stream_manager = MarketDataStreamManager(services, min_interval=5)
-
-            # Добавляем все подписки в менеджер
-            for subscription, tickers in self.subscriptions.values():
-                await stream_manager.add_subscription(subscription, tickers)
-
-            processor = MarketDataProcessor(
-                stream_manager, self.signal_handler, self.data_handlers
-            )
-
-            await stream_manager.subscribe_all()
-            await processor.process_market_data()
-        finally:
-            await client.__aexit__(None, None, None)
-
-
-def main():
-    TOKEN = Secrets.t_invest_token
-    TICKERS = ["SBER", "VTBR"]
-
-    async def async_last_price_handler(marketdata):
-        print("Last price update")
-        print(f"Асинхронно обрабатываем: {marketdata.last_price.price}")
-        figi = marketdata.last_price.figi
-        ticker = last_price_sub.figi_to_ticker.get(figi)
-        if ticker == "VTBR":
-            dt = marketdata.last_price.time.astimezone(GMT_3).strftime(
-                "%Y-%m-%dT%H:%M:%S"
-            )
-            price = (
-                marketdata.last_price.price.units
-                + marketdata.last_price.price.nano / 1_000_000_000
-            )
-            # Проверка: не обновлять по тикам, если последняя свеча отстаёт более чем на 1 минуту
-            last_candle_dt = app.last_dts.get("VTBR")
-            tick_dt = marketdata.last_price.time.astimezone(GMT_3)
-            if (
-                last_candle_dt is not None
-                and (tick_dt - last_candle_dt).total_seconds() > 60
-            ):
-                print(
-                    f"[DEBUG] Пропуск update_from_tick: tick_dt={tick_dt}, last_candle_dt={last_candle_dt}"
-                )
-                return
-            tick = pd.Series({"time": dt, "price": price})
-            print("[DEBUG] tick for update_from_tick:", tick)
-            app.chart.update_from_tick(tick)
-
-    async def async_candles_handler(marketdata):
-        candle = marketdata.candle
-        dt = candle.time.astimezone(GMT_3)
-        ticker = candles_sub.figi_to_ticker[candle.figi]
-
-        def price_value(price):
-            return price.units + price.nano / 1_000_000_000
-
-        prices = {}
-        for name in ("open", "high", "low", "close"):
-            prices[name] = price_value(getattr(candle, name))
-        prices["datetime"] = dt
-        prices["volume"] = int(candle.volume)
-        time_diff = dt - app.last_dts[ticker]
-
-        if time_diff.total_seconds() == 60:  # 1 минута
-            app.last_dts[ticker] = dt
-            app.historical_data[ticker] = pd.concat(
-                [app.historical_data[ticker], pd.DataFrame([prices])], ignore_index=True
-            )
-            if ticker == "VTBR":
-                line = app.historical_data[ticker].iloc[-2].copy()
-                if "datetime" in line:
-                    dt_val = line["datetime"]
-                    line["time"] = pd.to_datetime(dt_val).strftime("%Y-%m-%dT%H:%M:%S")
-                    line = line.drop("datetime")
-                # Переупорядочить поля для update
-                line = line[["time", "open", "high", "low", "close", "volume"]]
-
-                app.chart.update(line)
-            print(f"Свеча (неполная, предыдущая завершена) {ticker} в {dt}")
-        elif time_diff.total_seconds() == 0:  # Та же, обновим
-            app.historical_data[ticker].iloc[-1] = prices
-            # print("Обновление (повторка)")
-        elif time_diff.total_seconds() > 60:
-            app.last_dts[ticker] = dt
-            timeloss = round(time_diff.total_seconds() / 60)
-            app.historical_data[ticker] = pd.concat(
-                [app.historical_data[ticker], pd.DataFrame([prices])], ignore_index=True
-            )
-            if ticker == "VTBR":
-                line = app.historical_data[ticker].iloc[-2]
-                print(line)
-                app.chart.update(line)
-            print(f"!!! Потеряно {timeloss} минут")
-
-    app = MarketDataApp(TOKEN)
-
-    # Добавляем подписку на последние цены
-    last_price_sub = LastPriceSubscription("last_price")
-    app.add_subscription(last_price_sub, TICKERS, async_last_price_handler)
-
-    # Добавляем подписку на свечи
-    candles_sub = CandlesSubscription(
-        "candles", SubscriptionInterval.SUBSCRIPTION_INTERVAL_ONE_MINUTE
-    )
-    app.add_subscription(candles_sub, TICKERS, async_candles_handler)
-
-    try:
-        asyncio.run(app.run())
-    except KeyboardInterrupt:
-        print("\nПрограмма остановлена пользователем")
-
-
-if __name__ == "__main__":
-    print("Запуск приложения для получения рыночных данных...")
-    main()

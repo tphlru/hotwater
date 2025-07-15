@@ -26,5 +26,19 @@
     "load_tinkoff": true,
     "topup": true,
     "allow_resample": false
+  },
+  {
+    "ticker": "AFLT",
+    "date_format": "%Y-%m-%d %H:%M:%S",
+    "data_path": "/home/timur/Projects/hotwater/hotwater/summer/src/hotwater/data/AFLT-1min.parquet",
+    "date_column": "time",
+    "data_format": "parquet",
+    "timeframe": "1min",
+    "start_date": "2025-04-16 16:14:00",
+    "end_date": "now",
+    "load_moex": false,
+    "load_tinkoff": true,
+    "topup": true,
+    "allow_resample": false
   }
 ]
